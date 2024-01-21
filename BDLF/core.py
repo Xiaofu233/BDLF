@@ -1,13 +1,12 @@
 '''
 Auther: Bingyu_Hu
 Mail: hby0728@mail.ustc.edu.cn
-Date: 2024.01.03
+Date: 2024.01.21
 '''
 
 import numpy as np
 import weakref
 import contextlib
-
 
 class Config:
     enable_backprop = True
@@ -91,10 +90,11 @@ class Variable:
     def clear_grad(self):
         self.grad = None
 
-    def backward(self, retain_grad = False):
+    def backward(self, retain_grad = False, create_graph = False):
         #事先定义最终输出y.grad
         if self.grad is None:
-            self.grad = np.ones_like(self.data)
+            #使用Variable，用于计算高阶导数
+            self.grad = Variable(np.ones_like(self.data))
         
         funcs = []
         seen_set = set()
@@ -109,25 +109,25 @@ class Variable:
         while funcs:
             f = funcs.pop()
             gys = [output().grad for output in f.outputs]
-            gxs = f.backward(*gys)
-            if not isinstance(gxs, tuple):
-                gxs = (gxs, )
-            
-            for x, gx in zip(f.inputs, gxs):
-                if x.grad is None:
-                    x.grad = gx
-                else:
-                    x.grad += gx
+            with using_config('enable_backprop', create_graph):
+                gxs = f.backward(*gys)
+                if not isinstance(gxs, tuple):
+                    gxs = (gxs, )
+                
+                for x, gx in zip(f.inputs, gxs):
+                    if x.grad is None:
+                        x.grad = gx
+                    else:
+                        x.grad += gx
 
-                if x.creator is not None:
-                    add_func(x.creator)
-            
+                    if x.creator is not None:
+                        add_func(x.creator)
+                
             if not retain_grad:
                 for y in f.outputs:
                     y().grad = None
-    
 
-#Create Function Class
+
 class Function:
     def __call__(self, *inputs):
         inputs = [as_variable(x) for x in inputs]
@@ -184,7 +184,8 @@ class Mul(Function):
         return y
 
     def backward(self, gy):
-        x0, x1 = self.inputs[0].data, self.inputs[1].data
+        #x0, x1 = self.inputs[0].data, self.inputs[1].data
+        x0, x1 = self.inputs
         return gy * x1, gy * x0
 
 
@@ -230,7 +231,8 @@ class Div(Function):
         return y
 
     def backward(self, gy):
-        x0, x1 = self.inputs[0].data, self.inputs[1].data
+        #x0, x1 = self.inputs[0].data, self.inputs[1].data
+        x0, x1 = self.inputs
         gx0 = gy / x1
         gx1 = gy * (-x0 / x1 ** 2)
         return gx0, gx1
@@ -255,7 +257,8 @@ class Pow(Function):
         return y
 
     def backward(self, gy):
-        x = self.inputs[0].data
+        #x = self.inputs[0].data
+        x, = self.inputs
         c = self.c
 
         gx = c * x ** (c - 1) * gy
@@ -277,22 +280,4 @@ def setup_variable():
     Variable.__truediv__ = div
     Variable.__rtruediv__ = rdiv
     Variable.__pow__ = pow
-
-
-if __name__ == '__main__':
-    setup_variable()
-    x0 = Variable(np.array(2))
-    print(x0)
-    x1 = Variable(np.array(3))
-    f = Add()
-    y = f(x0, x1)
-    print(y.data)
     
-
-    x = Variable(np.array(2.0))
-    with no_grad():
-        x2 = Variable(np.array(2.0))
-        y2 = x2 ** 2
-    y3 = x0 * x1 + x
-    print(y3)
-

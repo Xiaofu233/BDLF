@@ -1,11 +1,5 @@
-'''
-Auther: Bingyu_Hu
-Mail: hby0728@mail.ustc.edu.cn
-Date: 2024.01.03
-'''
-
-import numpy as np
 import weakref
+import numpy as np
 import contextlib
 
 
@@ -22,29 +16,15 @@ def using_config(name, value):
     finally:
         setattr(Config, name, old_value)
 
+
 def no_grad():
     return using_config('enable_backprop', False)
-    
-#在numpy中，用0维的nparray计算，结果可能是np.float64,np.float32等标量，所以需要对output判断
-# eg: x = np.array(1.0),x为0维，y = x ** 2, y的类型为np.float64
-# eg: x = np.array([1.0]),x为1维，y = x ** 2, y为1维nparray
-def as_array(x):
-    if np.isscalar(x):
-        return np.array(x)
-    return x
-
-def as_variable(obj):
-    if isinstance(obj, Variable):
-        return obj
-    return Variable(obj)
 
 
-#Create Variable Class
 class Variable:
     __array_priority__ = 200
-    #用变量记录它的‘连接’
+
     def __init__(self, data, name=None):
-        #仅支持nparray数据
         if data is not None:
             if not isinstance(data, np.ndarray):
                 raise TypeError('{} is not supported'.format(type(data)))
@@ -54,27 +34,15 @@ class Variable:
         self.grad = None
         self.creator = None
         self.generation = 0
-    
-    def __len__(self):
-        return len(self.data)
-    
-    def __repr__(self):
-        if self.data is None:
-            return 'variable(None)'
-        p = str(self.data).replace('\n', '\n'+' '* 9)
-        return 'variable('+ p +')'
-    
-    # def __mul__(self, other):
-    #     return mul(self, other)
-    
-    # def __add__(self, other):
-    #     return add(self, other)
-        
-    
+
+    @property
+    def shape(self):
+        return self.data.shape
+
     @property
     def ndim(self):
         return self.data.ndim
-    
+
     @property
     def size(self):
         return self.data.size
@@ -82,22 +50,30 @@ class Variable:
     @property
     def dtype(self):
         return self.data.dtype
-    
-    
+
+    def __len__(self):
+        return len(self.data)
+
+    def __repr__(self):
+        if self.data is None:
+            return 'variable(None)'
+        p = str(self.data).replace('\n', '\n' + ' ' * 9)
+        return 'variable(' + p + ')'
+
     def set_creator(self, func):
         self.creator = func
         self.generation = func.generation + 1
-    
-    def clear_grad(self):
+
+    def cleargrad(self):
         self.grad = None
 
-    def backward(self, retain_grad = False):
-        #事先定义最终输出y.grad
+    def backward(self, retain_grad=False):
         if self.grad is None:
             self.grad = np.ones_like(self.data)
-        
+
         funcs = []
         seen_set = set()
+
         def add_func(f):
             if f not in seen_set:
                 funcs.append(f)
@@ -108,62 +84,63 @@ class Variable:
 
         while funcs:
             f = funcs.pop()
-            gys = [output().grad for output in f.outputs]
+            gys = [output().grad for output in f.outputs]  # output is weakref
             gxs = f.backward(*gys)
             if not isinstance(gxs, tuple):
-                gxs = (gxs, )
-            
+                gxs = (gxs,)
+
             for x, gx in zip(f.inputs, gxs):
                 if x.grad is None:
                     x.grad = gx
                 else:
-                    x.grad += gx
+                    x.grad = x.grad + gx
 
                 if x.creator is not None:
                     add_func(x.creator)
-            
+
             if not retain_grad:
                 for y in f.outputs:
-                    y().grad = None
-    
+                    y().grad = None  # y is weakref
 
-#Create Function Class
+
+def as_variable(obj):
+    if isinstance(obj, Variable):
+        return obj
+    return Variable(obj)
+
+
+def as_array(x):
+    if np.isscalar(x):
+        return np.array(x)
+    return x
+
+
 class Function:
     def __call__(self, *inputs):
         inputs = [as_variable(x) for x in inputs]
+
         xs = [x.data for x in inputs]
         ys = self.forward(*xs)
         if not isinstance(ys, tuple):
             ys = (ys,)
         outputs = [Variable(as_array(y)) for y in ys]
-        self.inputs = inputs
-       #self.outputs = outputs
-       #使用weakref来创建弱引用，弱引用不会增加引用计数，对存在循环引用时内存释放有利,改成弱引用后，需要用output()取出output值
+
         if Config.enable_backprop:
             self.generation = max([x.generation for x in inputs])
             for output in outputs:
                 output.set_creator(self)
-        self.outputs = [weakref.ref(output) for output in outputs]
+            self.inputs = inputs
+            self.outputs = [weakref.ref(output) for output in outputs]
+
         return outputs if len(outputs) > 1 else outputs[0]
-    
-    def forward(self, x):
-        raise NotImplementedError()
-    
-    def backward(self, gy):
+
+    def forward(self, xs):
         raise NotImplementedError()
 
-
-def numerical_diff(f, x, eps=1e-4):
-    x0 = Variable(x.data - eps)
-    x1 = Variable(x.data + eps)
-    y0 = f(x0)
-    y1 = f(x1)
-    return (y1.data - y0.data) / (2 * eps)
+    def backward(self, gys):
+        raise NotImplementedError()
 
 
-# =============================================================================
-# 四则运算 / 运算符重载
-# =============================================================================
 class Add(Function):
     def forward(self, x0, x1):
         y = x0 + x1
@@ -221,7 +198,7 @@ def sub(x0, x1):
 
 def rsub(x0, x1):
     x1 = as_array(x1)
-    return Sub()(x1, x0)
+    return sub(x1, x0)
 
 
 class Div(Function):
@@ -243,7 +220,7 @@ def div(x0, x1):
 
 def rdiv(x0, x1):
     x1 = as_array(x1)
-    return Div()(x1, x0)
+    return div(x1, x0)
 
 
 class Pow(Function):
@@ -266,33 +243,29 @@ def pow(x, c):
     return Pow(c)(x)
 
 
-def setup_variable():
-    Variable.__add__ = add
-    Variable.__radd__ = add
-    Variable.__mul__ = mul
-    Variable.__rmul__ = mul
-    Variable.__neg__ = neg
-    Variable.__sub__ = sub
-    Variable.__rsub__ = rsub
-    Variable.__truediv__ = div
-    Variable.__rtruediv__ = rdiv
-    Variable.__pow__ = pow
+Variable.__add__ = add
+Variable.__radd__ = add
+Variable.__mul__ = mul
+Variable.__rmul__ = mul
+Variable.__neg__ = neg
+Variable.__sub__ = sub
+Variable.__rsub__ = rsub
+Variable.__truediv__ = div
+Variable.__rtruediv__ = rdiv
+Variable.__pow__ = pow
 
+x = Variable(np.array(2.0))
+y = -x
+print(y)  # variable(-2.0)
 
-if __name__ == '__main__':
-    setup_variable()
-    x0 = Variable(np.array(2))
-    print(x0)
-    x1 = Variable(np.array(3))
-    f = Add()
-    y = f(x0, x1)
-    print(y.data)
-    
+y1 = 2.0 - x
+y2 = x - 1.0
+print(y1)  # variable(0.0)
+print(y2)  # variable(1.0)
 
-    x = Variable(np.array(2.0))
-    with no_grad():
-        x2 = Variable(np.array(2.0))
-        y2 = x2 ** 2
-    y3 = x0 * x1 + x
-    print(y3)
+y = 3.0 / x
+print(y)  # variable(1.5)
 
+y = x ** 3
+y.backward()
+print(y)  # variable(8.0)
